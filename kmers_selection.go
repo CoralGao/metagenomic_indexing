@@ -13,7 +13,7 @@ import (
    "sync"
    "runtime"
    "fmt"
-   "time"
+   // "time"
    "strings"
    "sort"
 )
@@ -27,7 +27,7 @@ var Neighbor = [][]int{}
 
 type ByArray struct {
    weights []int
-   keys []int16
+   keys []int32
 }
 func (s ByArray) Len() int {
    return len(s.keys)
@@ -60,11 +60,13 @@ func AssignKmersToGenomes(occ []int16, K int, N int) [][]int {
    return genomes
 }
 
-func CountUniqueKmers(dirname string, K int) ([]int16, []int, int) {
+func CountUniqueKmers(dirname string, K int) ([]int16, []int16, int) {
    var wg sync.WaitGroup
    occ := make([]int16, 1<<uint(2*K))
-   freq := make([]int, 1<<uint(2*K))
-   lock := make([]sync.Mutex, 1<<uint(2*K))
+   // freq := make([]int, 1<<uint(2*K))
+   freq := make([]int16, 1<<uint(2*K))
+   // lock := make([]sync.Mutex, 1<<uint(2*K))
+   lock := make([]sync.Mutex, 4)
    files, err := ioutil.ReadDir(dirname)
    error_check(err)
 
@@ -95,24 +97,14 @@ func CountUniqueKmers(dirname string, K int) ([]int16, []int, int) {
          }
       }()
    }
-
-/*   for idx, f := range(files) {
-       go func(gid int, cur_file os.FileInfo) {
-         fmt.Println("processing", cur_file.Name())
-         file, err := os.Open(path.Join(dirname, cur_file.Name()))
-         defer file.Close()
-         defer wg.Done()
-         error_check(err)
-         countFASTA(file, gid, K, occ, freq, lock)
-      }(idx+1, f)
-   }*/
    wg.Wait()
    return occ, freq, len(files)
 }
 
-func countFASTA(file *os.File, gid int, K int, occ []int16, freq []int, lock []sync.Mutex) {
+func countFASTA(file *os.File, gid int, K int, occ []int16, freq []int16, lock []sync.Mutex) {
    buffer := make([]byte, BUFF_SIZE)
    previous_kmer := make([]byte, K)
+   L := len(lock)
    header := true
    n, j, value, value_rc := 0, 0, 0, 0
    var pk int
@@ -159,23 +151,31 @@ func countFASTA(file *os.File, gid int, K int, occ []int16, freq []int, lock []s
 
 
                if j==K {
-                  lock[value].Lock()
-                  freq[value]++
+                  lock[value%L].Lock()
+                  if freq[value] == 32767 || freq[value] == -1{
+                     freq[value] = -1
+                  } else {
+                     freq[value]++
+                  }
                   if occ[value] == 0 {
                      occ[value] = int16(gid)
                   } else if occ[value] > 0 && occ[value] != int16(gid) {
                      occ[value] = int16(-1)      // value is no longer a GSM
                   }
-                  lock[value].Unlock()
+                  lock[value%L].Unlock()
 
-                  lock[value_rc].Lock()
-                  freq[value_rc]++
+                  lock[value_rc%L].Lock()
+                  if freq[value_rc] == 32767 || freq[value_rc] == -1{
+                     freq[value_rc] = -1
+                  } else {
+                     freq[value_rc]++
+                  }
                   if occ[value_rc] == 0 {
                      occ[value_rc] = int16(gid)
                   } else if occ[value_rc] > 0 && occ[value_rc] != int16(gid) {
                      occ[value_rc] = -1   // value_rc is no longer a GSM
                   }
-                  lock[value_rc].Unlock()
+                  lock[value_rc%L].Unlock()
                }
             }
          }
@@ -251,10 +251,10 @@ func GetNeighbors(x, K int) []int{
 }
 
 func main() {
-   start := time.Now()
+   // start := time.Now()
    runtime.GOMAXPROCS(runtime.NumCPU())
-   memstats := new(runtime.MemStats)
-   runtime.ReadMemStats(memstats)
+   // memstats := new(runtime.MemStats)
+   // runtime.ReadMemStats(memstats)
    if len(os.Args) != 4 {
       println("\tgo run kmers_selection.go genomes_dir K goodnum")
       println("\t\tgenomes_dir : directory containing genomes in FASTA format.")
@@ -263,8 +263,8 @@ func main() {
       os.Exit(1)
    }
    K, _ := strconv.Atoi(os.Args[2])
-   goodnum, _ := strconv.Atoi(os.Args[3])
-   fmt.Println(goodnum)
+   // goodnum, _ := strconv.Atoi(os.Args[3])
+   // fmt.Println(goodnum)
    if K >= MaxK {
       println(K,"is too big.")
       os.Exit(1)
@@ -279,42 +279,49 @@ func main() {
       namesChan <- i
    }
    close(namesChan)
-   workers := runtime.NumCPU()
+   workers := 1
    if len(genomes) < workers {
       workers = len(genomes)
    }
 
+   fmt.Println("gid", "weight")
    for i := 0; i < workers; i++ {
       go func(){
          for i := range namesChan {
             // fmt.Println(i, len(genomes[i]))
             weights := make([]int, len(genomes[i]))
-            keys := make([]int16, len(genomes[i]))
+            keys := make([]int32, len(genomes[i]))
             for j:=0; j<len(genomes[i]); j++ {
-               keys[j] = int16(j)
+               keys[j] = int32(j)
                // fmt.Println("\tGSM", NumToKmer(genomes[i][j], K), genomes[i][j])
                neighbors := GetNeighbors(genomes[i][j], K)
                for m := 0; m < len(neighbors); m++ {
-                  weights[j] = weights[j] + freq[neighbors[m]]
+                  weight := 0
+                  if freq[neighbors[m]] == -1 {
+                     weight = 32768
+                  } else {
+                     weight = int(freq[neighbors[m]])
+                  }
+                  weights[j] = weights[j] + weight
                }
             }
             sort.Sort(ByArray{weights, keys})
             // fmt.Println("weights", weights)
             // fmt.Println(keys)
-            if len(keys) != 0 {
+/*            if len(keys) != 0 {
                for n := 0; n < int(math.Min(float64(goodnum), float64(len(genomes[i])))); n++ {
                   fmt.Println(i, NumToKmer(genomes[i][keys[n]], K), genomes[i][keys[n]], weights[keys[n]])
                }
                // fmt.Println("MaxWeight", weights[keys[int(math.Min(float64(goodnum), float64(len(genomes[i])))) - 1]])
-            }
-      /*      for n := 0; n < len(keys); n++ {
-               fmt.Println("  ", genomes[i][keys[n]], weights[keys[n]])
             }*/
+            for n := 0; n < len(keys); n++ {
+               fmt.Println(i, weights[keys[n]])
+            }
             wg.Done()
          }
       }()
    }
    wg.Wait()
-   fmt.Println("Time taken:", time.Since(start))
-   fmt.Println("Memory taken:", memstats.TotalAlloc, "bytes", memstats.Alloc, "bytes")
+   // fmt.Println("Time taken:", time.Since(start))
+   // fmt.Println("Memory taken:", memstats.TotalAlloc, "bytes", memstats.Alloc, "bytes")
 }
